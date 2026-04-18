@@ -1,0 +1,432 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { 
+  Home, Leaf, BookHeart, PieChart, Settings, Mic, Plus, 
+  X, Check, Coffee, Utensils, Car, ShoppingBag, Wallet, 
+  Receipt, Heart, CloudLightning, ChevronRight, AlertCircle, Trash2, Cloud, CloudOff,
+  GraduationCap, Stethoscope, PawPrint, Gift, BookOpen, Users
+} from 'lucide-react';
+
+// --- UTILS & CONSTANTS ---
+
+const getLocalDateString = () => {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
+
+const formatMoney = (amount) => {
+  return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount);
+};
+
+const parseVoiceCommand = (text, categories) => {
+  let amount = '';
+  let categoryId = '';
+  let type = 'expense';
+  const lowerText = text.toLowerCase();
+
+  const cleanText = lowerText.replace(/[.,]/g, '');
+  const amountRegex = /(\d+)\s*(k|ngàn|ngh?n|tri?u)?/g;
+  let match;
+  let maxAmount = 0;
+
+  while ((match = amountRegex.exec(cleanText)) !== null) {
+      let num = parseInt(match[1], 10);
+      let unit = match[2];
+
+      if (unit === 'k' || unit === 'ngàn' || unit === 'ngh?n') {
+          num *= 1000;
+      } else if (unit === 'tri?u') {
+          num *= 1000000;
+      } else if (!unit && num < 1000) {
+          num *= 1000;
+      }
+      if (num > maxAmount) maxAmount = num;
+  }
+  if (maxAmount > 0) amount = maxAmount;
+
+  const keywords = {
+      'c1': ['ãn', 'u?ng', 'ph?', 'cõm', 'bún', 'th?c ph?m', 'ð? ãn', 'b?a'],
+      'c2': ['cà phê', 'cafe', 'trà s?a', 'ný?c ép', 'trà'], 
+      'c3': ['xãng', 'xe', 'grab', 'taxi', 'di chuy?n', 'g?i xe', 'vé xe', 'be', 'ði l?i'],
+      'c4': ['mua', 'qu?n áo', 'giày', 'shopee', 'lazada', 'tiki', 'siêu th?', 'ch?'],
+      'c5': ['ði?n', 'ný?c', 'internet', 'hóa ðõn', 'ti?n nhà', 'ti?n tr?', 'wifi'],
+      'c6': ['lýõng', 'thý?ng', 'thu nh?p', 'bán hàng', 'ti?n lýõng', 'ðý?c cho'],
+      'c7': ['h?c', 'sách', 'trý?ng', 'khóa h?c', 'giáo d?c', 'v?', 'bút'],
+      'c8': ['khám', 'thu?c', 'y t?', 'b?nh vi?n', 'nha khoa', 'bác s?', 'vitamin'],
+      'c9': ['chó', 'mèo', 'pet', 'v?t nuôi', 'thú cýng', 'pate', 'h?t'],
+      'c10': ['ðám cý?i', 'ðám tang', 'sinh nh?t', 'hi?u h?', 'ma chay', 'm?ng', 'vi?ng', 'quà']
+  };
+
+  for (const [catId, words] of Object.entries(keywords)) {
+      if (words.some(w => new RegExp(`(^|\\s)${w}(\\s|$)`, 'i').test(lowerText))) {
+          categoryId = catId;
+          if (catId === 'c6') type = 'income';
+          break;
+      }
+  }
+
+  if (!categoryId) {
+      categoryId = categories.find(c => type === 'income' ? c.type === 'income' : c.type !== 'income')?.id || '';
+  }
+
+  const formattedDesc = text.charAt(0).toUpperCase() + text.slice(1);
+  return { amount, category: categoryId, type, description: formattedDesc, inputMethod: 'voice' };
+};
+
+const DEFAULT_CATEGORIES = [
+  { id: 'c1', name: 'Ãn u?ng', planned: 4000000, color: 'bg-orange-400', textColor: 'text-orange-600', icon: 'Utensils' },
+  { id: 'c2', name: 'Cà phê', planned: 1000000, color: 'bg-amber-600', textColor: 'text-amber-600', icon: 'Coffee' },
+  { id: 'c3', name: 'Di chuy?n', planned: 1000000, color: 'bg-blue-400', textColor: 'text-blue-600', icon: 'Car' },
+  { id: 'c4', name: 'Mua s?m', planned: 2000000, color: 'bg-pink-400', textColor: 'text-pink-600', icon: 'ShoppingBag' },
+  { id: 'c5', name: 'Hóa ðõn', planned: 1500000, color: 'bg-purple-400', textColor: 'text-purple-600', icon: 'Receipt' },
+  { id: 'c7', name: 'Giáo d?c', planned: 2000000, color: 'bg-indigo-400', textColor: 'text-indigo-600', icon: 'GraduationCap' },
+  { id: 'c8', name: 'Y t?', planned: 1000000, color: 'bg-rose-400', textColor: 'text-rose-600', icon: 'Stethoscope' },
+  { id: 'c9', name: 'V?t nuôi', planned: 500000, color: 'bg-teal-400', textColor: 'text-teal-600', icon: 'PawPrint' },
+  { id: 'c10', name: 'Hi?u h?', planned: 1000000, color: 'bg-yellow-400', textColor: 'text-yellow-600', icon: 'Gift' },
+  { id: 'c6', name: 'Lýõng', planned: 0, color: 'bg-emerald-500', textColor: 'text-emerald-600', icon: 'Wallet', type: 'income' },
+];
+
+const IconMap = { Utensils, Coffee, Car, ShoppingBag, Receipt, Wallet, Heart, GraduationCap, Stethoscope, PawPrint, Gift };
+
+function useLocalStorage(key, initialValue) {
+  const [storedValue, setStoredValue] = useState(() => {
+    try {
+      const item = window.localStorage.getItem(key);
+      return item ? JSON.parse(item) : initialValue;
+    } catch (error) {
+      console.error(error);
+      return initialValue;
+    }
+  });
+
+  const setValue = (value) => {
+    try {
+      const valueToStore = value instanceof Function ? value(storedValue) : value;
+      setStoredValue(valueToStore);
+      window.localStorage.setItem(key, JSON.stringify(valueToStore));
+    } catch (error) {
+      console.error(error);
+    }
+  };
+  return [storedValue, setValue];
+}
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [transactions, setTransactions] = useLocalStorage('sta_transactions', []);
+  const [categories, setCategories] = useLocalStorage('sta_categories', DEFAULT_CATEGORIES);
+  const [goals, setGoals] = useLocalStorage('sta_goals', []);
+  // ÐÝ?NG D?N M?I C?A B?N Ð? ÐÝ?C CÀI Ð?T T?I ÐÂY
+  const [settings, setSettings] = useLocalStorage('sta_settings', { sheetUrl: 'https://script.google.com/macros/s/AKfycbwIZ57r02NLkG2DQeNDFSSqw7eXJ86WONCss1pfNInWZCeybzTCics0b44e7Dcn5y9M/exec', lastOpened: null });
+  
+  const [isMorningOpen, setIsMorningOpen] = useState(false);
+  const [isTransactionModalOpen, setIsTransactionModalOpen] = useState(false);
+  const [voiceState, setVoiceState] = useState({ isListening: false, text: '', error: '' });
+  const [transactionForm, setTransactionForm] = useState(null);
+  const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
+  const [goalForm, setGoalForm] = useState({ name: '', targetAmount: '' });
+  const [syncStatus, setSyncStatus] = useState('idle'); 
+
+  useEffect(() => {
+    const today = new Date().toDateString();
+    const pullData = async () => {
+      if (!settings.sheetUrl) return;
+      setSyncStatus('syncing');
+      try {
+        const res = await fetch(settings.sheetUrl);
+        const data = await res.json();
+        if (data && data.transactions) {
+          // L?c d? li?u header và rác, ch? gi? l?i các giao d?ch có ID h?p l?
+          const cleanTxs = data.transactions.filter(t => !isNaN(t.id) && t.id > 1000000);
+          setTransactions(cleanTxs);
+          if (data.categories && data.categories.length > 0) setCategories(data.categories);
+          if (data.goals) setGoals(data.goals);
+        }
+        setSyncStatus('success');
+        setTimeout(() => setSyncStatus('idle'), 3000);
+      } catch (error) {
+        setSyncStatus('error');
+        setTimeout(() => setSyncStatus('idle'), 3000);
+      }
+    };
+    pullData();
+    if (settings.lastOpened !== today) {
+      setTimeout(() => setIsMorningOpen(true), 1500);
+      setSettings(prev => ({ ...prev, lastOpened: today }));
+    }
+  }, []);
+
+  const autoSyncToCloud = async (newData) => {
+    if (!settings.sheetUrl) return;
+    setSyncStatus('syncing');
+    try {
+      await fetch(settings.sheetUrl, {
+        method: 'POST',
+        body: JSON.stringify(newData),
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' }
+      });
+      setSyncStatus('success');
+      setTimeout(() => setSyncStatus('idle'), 2000);
+    } catch (error) {
+      setSyncStatus('error');
+      setTimeout(() => setSyncStatus('idle'), 3000);
+    }
+  };
+
+  const { totalBalance, incomeMonth, expenseMonth } = useMemo(() => {
+    const now = new Date();
+    const currentMonth = now.getMonth(), currentYear = now.getFullYear();
+    let balance = 0, income = 0, expense = 0;
+    transactions.forEach(t => {
+      if (t.type === 'income') balance += t.amount; else balance -= t.amount;
+      const tDate = new Date(t.date);
+      if (tDate.getMonth() === currentMonth && tDate.getFullYear() === currentYear) {
+        if (t.type === 'income') income += t.amount; else expense += t.amount;
+      }
+    });
+    return { totalBalance: balance, incomeMonth: income, expenseMonth: expense };
+  }, [transactions]);
+
+  const handleSaveTransaction = (e) => {
+    e.preventDefault();
+    const newTx = { ...transactionForm, id: Date.now(), date: transactionForm.date || new Date().toISOString(), amount: Number(transactionForm.amount) };
+    const newTxs = [newTx, ...transactions];
+    setTransactions(newTxs);
+    setIsTransactionModalOpen(false);
+    autoSyncToCloud({ transactions: newTxs, categories, goals });
+  };
+
+  const handleOpenTransaction = (type = 'expense', initialData = {}) => {
+    const def = categories.find(c => type === 'income' ? c.type === 'income' : c.type !== 'income');
+    setTransactionForm({ type, amount: '', category: def ? def.id : '', description: '', inputMethod: 'manual', date: getLocalDateString(), ...initialData });
+    setIsTransactionModalOpen(true);
+  };
+
+  const handleVoiceInput = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) { setVoiceState({ isListening: true, text: '', error: 'Chýa h? tr? nghe.' }); return; }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'vi-VN';
+    recognition.onstart = () => setVoiceState({ isListening: true, text: '', error: '' });
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setVoiceState({ isListening: true, text: transcript, error: '' });
+      const parsedData = parseVoiceCommand(transcript, categories);
+      setTimeout(() => { setVoiceState({ isListening: false, text: '', error: '' }); handleOpenTransaction(parsedData.type, parsedData); }, 1500); 
+    };
+    recognition.onerror = () => { setVoiceState({ isListening: true, text: '', error: 'Chýa nghe r?.' }); setTimeout(() => setVoiceState({ isListening: false, text: '', error: '' }), 3000); };
+    recognition.start();
+  };
+
+  const handleWaterPlant = (goalId) => {
+    const amt = 100000; 
+    if (totalBalance < amt) { alert("S? dý không ð?."); return; }
+    const tx = { id: Date.now(), date: new Date().toISOString(), amount: amt, type: 'expense', category: 'savings', description: `G?i qu?: ${goals.find(g => g.id === goalId).name}`, inputMethod: 'manual' };
+    const newTxs = [tx, ...transactions], newGoals = goals.map(g => g.id === goalId ? { ...g, currentAmount: g.currentAmount + amt } : g);
+    setTransactions(newTxs); setGoals(newGoals);
+    autoSyncToCloud({ transactions: newTxs, categories, goals: newGoals });
+  };
+
+  const handleSaveGoal = (e) => {
+    e.preventDefault();
+    const newGoal = { id: Date.now(), name: goalForm.name, targetAmount: Number(goalForm.targetAmount), currentAmount: 0 };
+    const newGoals = [...goals, newGoal];
+    setGoals(newGoals); setIsGoalModalOpen(false); setGoalForm({ name: '', targetAmount: '' });
+    autoSyncToCloud({ transactions, categories, goals: newGoals });
+  };
+
+  const handleDeleteGoal = (id) => {
+    const newGoals = goals.filter(g => g.id !== id);
+    setGoals(newGoals); autoSyncToCloud({ transactions, categories, goals: newGoals });
+  };
+
+  const renderDashboard = () => (
+    <div className="space-y-6 animate-fade-in pb-24">
+      <div className="bg-gradient-to-br from-blue-600 to-blue-800 rounded-3xl p-6 text-white shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 -mr-8 -mt-8 w-32 h-32 rounded-full bg-white/10 blur-2xl"></div>
+        <p className="text-blue-100 text-sm font-medium opacity-90 mb-1">S? dý an tâm</p>
+        <h1 className="text-4xl font-bold tracking-tight mb-6">{formatMoney(totalBalance)}</h1>
+        <div className="flex justify-between items-center bg-white/10 rounded-2xl p-4 backdrop-blur-sm">
+          <div><p className="text-blue-200 text-xs mb-1">Thu tháng này</p><p className="font-semibold text-emerald-300">+{formatMoney(incomeMonth)}</p></div>
+          <div className="h-8 w-[1px] bg-white/20"></div>
+          <div><p className="text-blue-200 text-xs mb-1">Chi tháng này</p><p className="font-semibold text-rose-300">-{formatMoney(expenseMonth)}</p></div>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <button onClick={() => handleOpenTransaction('expense')} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-center gap-2 hover:bg-slate-50 transition-colors">
+          <div className="w-8 h-8 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center"><Plus size={16} className="rotate-45" /></div>
+          <span className="font-medium text-slate-700">Chi ti?n</span>
+        </button>
+        <button onClick={() => handleOpenTransaction('income')} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-center gap-2 hover:bg-slate-50 transition-colors">
+          <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center"><Plus size={16} /></div>
+          <span className="font-medium text-slate-700">Thu vào</span>
+        </button>
+      </div>
+      <div>
+        <div className="flex justify-between items-center mb-4"><h2 className="text-lg font-bold text-slate-800">G?n ðây</h2><button onClick={() => setActiveTab('journal')} className="text-sm text-blue-600 font-medium">Xem h?t</button></div>
+        <div className="space-y-3">
+          {transactions.slice(0, 4).map((tx, index) => {
+            if (tx.type === 'note') return null; 
+            const cat = categories.find(c => c.id === tx.category) || { name: 'Khác', color: 'bg-gray-400', textColor: 'text-gray-600', icon: 'Receipt' };
+            const Icon = IconMap[cat.icon] || Receipt;
+            return (
+              <div key={`${tx.id}-${index}`} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-50 flex items-center justify-between animate-fade-in">
+                <div className="flex items-center gap-4">
+                  <div className={`w-12 h-12 rounded-2xl ${cat.color} bg-opacity-20 flex items-center justify-center text-slate-700`}><Icon size={20} className={cat.textColor} /></div>
+                  <div><p className="font-semibold text-slate-800">{cat.name}</p><p className="text-xs text-slate-400 max-w-[150px] truncate">{tx.description || '...'}</p></div>
+                </div>
+                <div className="text-right">
+                  <p className={`font-bold ${tx.type === 'expense' ? 'text-slate-800' : 'text-emerald-500'}`}>{tx.type === 'expense' ? '-' : '+'}{formatMoney(tx.amount)}</p>
+                  <p className="text-[10px] text-slate-400">{new Date(tx.date).toLocaleDateString('vi-VN')}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderGarden = () => (
+    <div className="space-y-6 animate-fade-in pb-24 text-center">
+      <h1 className="text-2xl font-bold text-slate-800 mb-2">Khu vý?n ti?t ki?m</h1>
+      <p className="text-slate-500 text-sm mb-8">Chãm sóc nh?ng m?c tiêu t?ng chút m?t.</p>
+      {goals.map((goal, index) => {
+        const percent = Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100));
+        let plantState = { icon: '??', label: 'H?t m?m', color: 'text-emerald-500' };
+        if (percent >= 80) plantState = { icon: '??', label: 'Hoa n?', color: 'text-pink-500' }; else if (percent >= 30) plantState = { icon: '??', label: 'Cây non', color: 'text-emerald-600' };
+        return (
+          <div key={`${goal.id}-${index}`} className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 text-center relative overflow-hidden mb-6 animate-fade-in">
+            <button onClick={(e) => { e.stopPropagation(); handleDeleteGoal(goal.id); }} className="absolute top-4 right-4 p-2 text-slate-300 hover:text-rose-400 transition-colors bg-slate-50 rounded-full"><Trash2 size={16} /></button>
+            <div className="text-5xl mb-2 animate-bounce-slow">{plantState.icon}</div>
+            <p className={`text-xs font-medium mb-4 ${plantState.color}`}>{plantState.label}</p>
+            <h3 className="font-bold text-slate-800 text-lg mb-1">{goal.name}</h3>
+            <p className="text-sm text-slate-500 mb-6">{formatMoney(goal.currentAmount)} / {formatMoney(goal.targetAmount)}</p>
+            <div className="w-full bg-slate-100 rounded-full h-3 mb-6 overflow-hidden"><div className="bg-gradient-to-r from-emerald-400 to-emerald-500 h-3 rounded-full transition-all duration-1000" style={{ width: `${percent}%` }}></div></div>
+            <button onClick={() => handleWaterPlant(goal.id)} className="bg-blue-50 text-blue-600 font-semibold py-3 px-6 rounded-xl w-full flex items-center justify-center gap-2 active:scale-95 transition-transform"><CloudLightning size={18} /> Tý?i cây (100k)</button>
+          </div>
+        );
+      })}
+      <button onClick={() => setIsGoalModalOpen(true)} className="w-full border-2 border-dashed border-slate-200 text-slate-500 hover:text-blue-600 transition-colors font-medium py-4 rounded-3xl flex items-center justify-center gap-2"><Plus size={18} /> Gieo thêm m?m m?i</button>
+    </div>
+  );
+
+  const renderJournal = () => {
+    const grouped = transactions.reduce((acc, tx) => {
+      const date = new Date(tx.date).toLocaleDateString('vi-VN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      if (!acc[date]) acc[date] = []; acc[date].push(tx); return acc;
+    }, {});
+    return (
+      <div className="space-y-6 animate-fade-in pb-24">
+        <div className="mb-6 flex justify-between items-end"><div><h1 className="text-2xl font-bold text-slate-800">Nh?t k?</h1><p className="text-slate-500 text-sm">D?ng ch?y cu?c s?ng.</p></div><button onClick={() => handleOpenTransaction('note')} className="bg-rose-50 text-rose-500 p-2 rounded-xl flex items-center gap-1 text-sm font-medium"><Heart size={16} /> Bi?t õn</button></div>
+        {Object.keys(grouped).length === 0 ? <div className="text-center py-20 text-slate-500 text-sm">Hôm nay là m?t trang gi?y tr?ng.</div> :
+          Object.entries(grouped).map(([date, txs]) => (
+            <div key={date} className="mb-6"><h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 px-1">{date}</h3>
+              <div className="space-y-3">{txs.map((tx, index) => (
+                tx.type === 'note' ? (
+                  <div key={`${tx.id}-${index}`} className="bg-rose-50 border border-rose-100 p-4 rounded-2xl flex items-start gap-4 animate-fade-in"><div className="mt-1 text-rose-400"><Heart size={20} fill="currentColor" /></div><div><p className="font-medium text-rose-900 mb-1">L?i bi?t õn</p><p className="text-sm text-rose-700 italic">"{tx.description}"</p></div></div>
+                ) : (
+                  <div key={`${tx.id}-${index}`} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-50 flex items-center justify-between animate-fade-in">
+                    <div className="flex items-center gap-4">
+                      <div className={`w-10 h-10 rounded-xl ${categories.find(c => c.id === tx.category)?.color || 'bg-slate-200'} bg-opacity-10 flex items-center justify-center`}><Receipt size={18} className="text-slate-600" /></div>
+                      <div><p className="font-semibold text-slate-800 text-sm">{categories.find(c => c.id === tx.category)?.name || 'Khác'}</p><p className="text-xs text-slate-400 max-w-[150px] truncate">{tx.description || '...'}</p></div>
+                    </div>
+                    <div className="text-right flex items-center gap-2"><p className={`font-bold text-sm ${tx.type === 'expense' ? 'text-slate-800' : 'text-emerald-500'}`}>{tx.type === 'expense' ? '-' : '+'}{formatMoney(tx.amount)}</p>{tx.inputMethod === 'voice' && <Mic size={12} className="text-blue-400" />}</div>
+                  </div>
+                )
+              ))}</div>
+            </div>
+          ))}
+      </div>
+    );
+  };
+
+  const renderReport = () => {
+    const now = new Date();
+    const currentMonthTxs = transactions.filter(t => new Date(t.date).getMonth() === now.getMonth() && new Date(t.date).getFullYear() === now.getFullYear() && t.type === 'expense');
+    const spendingByCategory = currentMonthTxs.reduce((acc, tx) => { acc[tx.category] = (acc[tx.category] || 0) + tx.amount; return acc; }, {});
+    return (
+      <div className="space-y-6 animate-fade-in pb-24">
+        <div><h1 className="text-2xl font-bold text-slate-800 mb-2">Báo cáo</h1><p className="text-slate-500 text-sm">Tháng {now.getMonth() + 1}/{now.getFullYear()}</p></div>
+        <div className="space-y-4">
+          {categories.filter(c => c.type !== 'income').map((cat, index) => {
+            const spent = spendingByCategory[cat.id] || 0, planned = cat.planned; if (planned === 0) return null; 
+            const percent = Math.min(200, Math.round((spent / planned) * 100)); 
+            return (
+              <div key={`${cat.id}-${index}`} className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100 animate-fade-in">
+                <div className="flex justify-between items-center mb-3"><div className="flex items-center gap-2"><div className={`w-8 h-8 rounded-full ${cat.color} bg-opacity-20 flex items-center justify-center`}>{React.createElement(IconMap[cat.icon] || Receipt, { size: 14, className: cat.textColor })}</div><span className="font-semibold text-slate-700">{cat.name}</span></div><span className="text-sm font-bold text-slate-800">{percent}%</span></div>
+                <div className="w-full bg-slate-100 rounded-full h-2 mb-2 overflow-hidden"><div className={`${percent >= 100 ? 'bg-rose-500' : percent >= 80 ? 'bg-amber-400' : 'bg-emerald-400'} h-2 rounded-full transition-all`} style={{ width: `${Math.min(100, percent)}%` }}></div></div>
+                <div className="flex justify-between text-xs text-slate-500"><span>Chi: {formatMoney(spent)}</span><span>K? ho?ch: {formatMoney(planned)}</span></div>
+                {percent >= 100 && <div className="mt-2 bg-rose-50 p-3 rounded-xl flex items-start gap-2"><AlertCircle size={16} className="text-rose-500 flex-shrink-0" /><p className="text-xs text-rose-700">?? Vý?t k? ho?ch r?i, h?y ch?t chiu hõn nhé.</p></div>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderSettings = () => (
+    <div className="space-y-6 animate-fade-in pb-24">
+      <h1 className="text-2xl font-bold text-slate-800 mb-6">Cài ð?t</h1>
+      <div className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100">
+        <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><CloudLightning size={18} className="text-blue-500"/> Ð?ng b? mây</h3>
+        <p className="text-xs text-slate-500 mb-4 leading-relaxed">D? li?u ðý?c c?t gi? ngãn n?p t?i: <br/><span className="text-[10px] break-all opacity-60">{settings.sheetUrl}</span></p>
+        <div className="flex items-center justify-center gap-2 py-2 text-sm font-medium">
+           {syncStatus === 'syncing' && <span className="text-blue-500 animate-pulse flex items-center gap-2"><Cloud size={16}/> Ðang c?t gi?...</span>}
+           {syncStatus === 'success' && <span className="text-emerald-500 flex items-center gap-2"><Check size={16}/> M?i th? n? n?p</span>}
+           {syncStatus === 'error' && <span className="text-rose-500 flex items-center gap-2"><CloudOff size={16}/> L?i ð?ng b?</span>}
+           {syncStatus === 'idle' && <span className="text-slate-400 flex items-center gap-2"><Cloud size={16}/> Ðám mây b?o v? b?n</span>}
+        </div>
+      </div>
+      <div className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100">
+        <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><PieChart size={18} className="text-rose-500"/> K? ho?ch chi tiêu</h3>
+        <div className="space-y-4">{categories.filter(c => c.type !== 'income').map((cat, index) => (
+          <div key={`${cat.id}-${index}`} className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-3"><div className={`w-10 h-10 rounded-xl ${cat.color} bg-opacity-10 flex items-center justify-center`}><IconMap.Receipt size={18} className={cat.textColor} /></div><span className="text-sm font-medium text-slate-700">{cat.name}</span></div>
+            <div className="flex items-center border-b border-slate-200 pb-1 w-28"><input type="number" value={cat.planned === 0 ? '' : cat.planned} onChange={(e) => { const val = Number(e.target.value); const newCats = categories.map(c => c.id === cat.id ? { ...c, planned: val } : c); setCategories(newCats); autoSyncToCloud({ transactions, categories: newCats, goals }); }} className="w-full text-right text-sm font-bold text-slate-800 bg-transparent focus:outline-none" placeholder="0" /><span className="text-xs text-slate-400 ml-1">ð</span></div>
+          </div>
+        ))}</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-200 flex items-center justify-center p-4 font-sans text-slate-900">
+      <div className="w-full max-w-[375px] h-[812px] bg-bg rounded-[2.5rem] shadow-2xl overflow-hidden relative border-[8px] border-slate-900 flex flex-col">
+        <div className="h-7 w-full flex justify-between items-center px-6 pt-2 text-[10px] font-bold text-slate-800 z-50"><span>9:41</span><div className="flex gap-1.5 items-center">{syncStatus === 'syncing' && <Cloud size={10} className="text-blue-500 animate-pulse mr-1" />}<div className="w-3 h-3 rounded-full bg-slate-800"></div></div></div>
+        <div className="px-6 pt-6 pb-2">
+          {activeTab === 'dashboard' && <div className="flex justify-between items-center"><div className="flex items-center gap-3"><div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center text-xl">??</div><div><p className="text-xs text-slate-500">Xin chào,</p><p className="font-bold text-slate-800">B?nh Yên</p></div></div><button onClick={() => setActiveTab('settings')} className="text-slate-400 hover:text-slate-600"><Settings size={22} /></button></div>}
+        </div>
+        <div className="flex-1 overflow-y-auto custom-scrollbar px-6 pt-2">{activeTab === 'dashboard' && renderDashboard()}{activeTab === 'garden' && renderGarden()}{activeTab === 'journal' && renderJournal()}{activeTab === 'report' && renderReport()}{activeTab === 'settings' && renderSettings()}</div>
+        <div className="absolute bottom-24 left-1/2 transform -translate-x-1/2 z-40"><button onClick={handleVoiceInput} className="w-16 h-16 rounded-full bg-gradient-to-tr from-blue-600 to-blue-400 text-white flex items-center justify-center shadow-lg hover:scale-105 active:scale-95 transition-all"><Mic size={28} /></button></div>
+        <div className="absolute bottom-0 w-full h-20 bg-white/80 backdrop-blur-xl border-t border-slate-100 px-6 flex justify-between items-center pb-2 z-30 rounded-b-[2rem]">{[{id:'dashboard',icon:Home,label:'T?ng quan'},{id:'garden',icon:Leaf,label:'Khu vý?n'},{id:'space',icon:null,label:''},{id:'journal',icon:BookHeart,label:'Nh?t k?'},{id:'report',icon:PieChart,label:'Báo cáo'}].map((t, i) => t.icon ? (<button key={`${t.id}-${i}`} onClick={()=>setActiveTab(t.id)} className={`flex flex-col items-center gap-1 min-w-[50px] ${activeTab === t.id ? 'text-blue-600' : 'text-slate-400'}`}><t.icon size={22} /><span className="text-[10px] font-medium">{t.label}</span></button>) : (<div key="s" className="w-[50px]"></div>))}</div>
+        {isMorningOpen && (
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-6 animate-fade-in">
+            <div className="bg-white rounded-3xl p-8 w-full shadow-2xl text-center"><div className="text-5xl mb-4">??</div><h2 className="text-2xl font-bold text-slate-800 mb-2">Chào bu?i sáng</h2><p className="text-slate-600 text-sm mb-6 leading-relaxed">M?t ngày m?i l?i ð?n. H?y dành 1 phút vi?t ra m?t ði?u b?n th?y bi?t õn hôm nay nhé.</p><button onClick={()=>{setIsMorningOpen(false);setActiveTab('journal');handleOpenTransaction('note');}} className="w-full bg-blue-600 text-white font-semibold py-3.5 rounded-xl mb-3 shadow-md">Vi?t l?i bi?t õn</button><button onClick={()=>setIsMorningOpen(false)} className="w-full text-slate-400 font-medium py-2 text-sm">Ð? sau</button></div>
+          </div>
+        )}
+        {voiceState.isListening && (
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-md z-[60] flex flex-col items-center justify-center p-6 animate-fade-in" onClick={() => setVoiceState({ isListening: false, text: '', error: '' })}><div className="w-24 h-24 rounded-full bg-blue-500/20 flex items-center justify-center animate-pulse"><div className={`w-16 h-16 rounded-full flex items-center justify-center text-white shadow-lg ${voiceState.error ? 'bg-rose-500' : 'bg-blue-500'}`}><Mic size={32} className={!voiceState.error ? "animate-bounce" : ""} /></div></div><p className={`font-medium mt-6 text-lg text-center px-4 ${voiceState.error ? 'text-rose-300' : 'text-white'}`}>{voiceState.error || voiceState.text || "Ðang nghe..."}</p></div>
+        )}
+        {isTransactionModalOpen && transactionForm && (
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm z-[70] flex items-end animate-slide-up"><div className="bg-white w-full rounded-t-3xl p-6 h-[85%] flex flex-col shadow-2xl"><div className="flex justify-between items-center mb-6"><h2 className="text-xl font-bold text-slate-800">{transactionForm.type === 'note' ? 'L?i bi?t õn' : 'Ghi chép'}</h2><button onClick={() => setIsTransactionModalOpen(false)} className="p-2 bg-slate-100 rounded-full text-slate-500"><X size={20} /></button></div>
+              <form onSubmit={handleSaveTransaction} className="flex-1 overflow-y-auto space-y-5 pb-10">{transactionForm.type !== 'note' && (<div className="flex bg-slate-100 p-1 rounded-xl"><button type="button" onClick={() => { const d = categories.find(c => c.type !== 'income'); setTransactionForm({...transactionForm, type: 'expense', category: d ? d.id : ''}); }} className={`flex-1 py-2 text-sm font-medium rounded-lg ${transactionForm.type === 'expense' ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500'}`}>Chi</button><button type="button" onClick={() => { const d = categories.find(c => c.type === 'income'); setTransactionForm({...transactionForm, type: 'income', category: d ? d.id : ''}); }} className={`flex-1 py-2 text-sm font-medium rounded-lg ${transactionForm.type === 'income' ? 'bg-white shadow-sm text-emerald-600' : 'text-slate-500'}`}>Thu</button></div>)}
+                {transactionForm.type !== 'note' && (<><div><label className="block text-xs font-semibold text-slate-400 uppercase mb-2">S? ti?n</label><input type="number" required value={transactionForm.amount} onChange={(e) => setTransactionForm({...transactionForm, amount: e.target.value})} className="w-full text-3xl font-bold text-slate-800 border-b-2 border-slate-200 focus:border-blue-500 focus:outline-none pb-2 bg-transparent" /></div>
+                    <div><label className="block text-xs font-semibold text-slate-400 uppercase mb-2">Danh m?c</label><div className="grid grid-cols-4 gap-3">{categories.filter(c => transactionForm.type === 'income' ? c.type === 'income' : c.type !== 'income').map((cat, index) => (<button key={`${cat.id}-${index}`} type="button" onClick={() => setTransactionForm({...transactionForm, category: cat.id})} className={`flex flex-col items-center p-2 rounded-xl border-2 transition-all ${transactionForm.category === cat.id ? 'border-blue-500 bg-blue-50' : 'border-transparent bg-slate-50'}`}><div className={`w-10 h-10 rounded-full ${cat.color} bg-opacity-20 flex items-center justify-center mb-1`}>{React.createElement(IconMap[cat.icon] || Receipt, { size: 18, className: cat.textColor })}</div><span className="text-[10px] font-medium text-slate-600 text-center leading-tight">{cat.name}</span></button>))}</div></div></>)}
+                <div><label className="block text-xs font-semibold text-slate-400 uppercase mb-2">{transactionForm.type === 'note' ? 'Ði?u bi?t õn' : 'Ghi chú'}</label><textarea rows={transactionForm.type === 'note' ? "5" : "2"} value={transactionForm.description} onChange={(e) => setTransactionForm({...transactionForm, description: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm focus:outline-none" required={transactionForm.type === 'note'} /></div>
+                <div><label className="block text-xs font-semibold text-slate-400 uppercase mb-2">Ngày</label><input type="date" value={transactionForm.date} onChange={(e) => setTransactionForm({...transactionForm, date: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm focus:outline-none" /></div>
+                <div className="pt-4 pb-20"><button type="submit" className="w-full bg-blue-600 text-white font-bold text-lg py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">Lýu</button></div>
+              </form></div></div>
+        )}
+        {isGoalModalOpen && (
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm z-[70] flex items-end animate-slide-up"><div className="bg-white w-full rounded-t-3xl p-6 h-[75%] flex flex-col shadow-2xl"><div className="flex justify-between items-center mb-6"><h2 className="text-xl font-bold text-slate-800">Gieo h?t m?m</h2><button onClick={() => setIsGoalModalOpen(false)} className="p-2 bg-slate-100 rounded-full text-slate-500"><X size={20} /></button></div>
+              <form onSubmit={handleSaveGoal} className="flex-1 overflow-y-auto space-y-5 pb-10"><div><label className="block text-xs font-semibold text-slate-400 uppercase mb-2">Ý?c mõ</label><input type="text" required value={goalForm.name} onChange={(e) => setGoalForm({...goalForm, name: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm focus:outline-none" /></div>
+                <div><label className="block text-xs font-semibold text-slate-400 uppercase mb-2">S? ti?n c?n</label><input type="number" required value={goalForm.targetAmount} onChange={(e) => setGoalForm({...goalForm, targetAmount: e.target.value})} className="w-full text-3xl font-bold text-slate-800 border-b-2 border-slate-200 focus:border-blue-500 focus:outline-none pb-2 bg-transparent" /></div>
+                <div className="pt-8"><button type="submit" className="w-full bg-emerald-500 text-white font-bold text-lg py-4 rounded-2xl shadow-lg active:scale-95 transition-transform">Gieo m?m</button></div>
+              </form></div></div>
+        )}
+      </div>
+      <style dangerouslySetInnerHTML={{__html: `.custom-scrollbar::-webkit-scrollbar { display: none; } .custom-scrollbar { -ms-overflow-style: none; scrollbar-width: none; } @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } } .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; } @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } } .animate-slide-up { animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; } @keyframes bounceSlow { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } } .animate-bounce-slow { animation: bounceSlow 3s ease-in-out infinite; }`}} />
+    </div>
+  );
+}
